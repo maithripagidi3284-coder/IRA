@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Task Agent</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    -webkit-app-region: drag; /* lets you drag the whole window by clicking anywhere */
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    height: 100vh;
+  }
+
+  .orb-wrapper {
+    position: relative;
+    width: 180px;
+    height: 180px;
+    margin-top: 15px;
+    -webkit-app-region: no-drag; /* clicking the orb itself toggles listening, not dragging */
+    cursor: pointer;
+  }
+
+  .ring {
+    position: absolute;
+    inset: -10px;
+    border-radius: 50%;
+    background: conic-gradient(from 0deg, #4facfe, #a855f7, #fb923c, #4facfe);
+    filter: blur(6px);
+    opacity: 0.6;
+    animation: spin 6s linear infinite;
+  }
+
+  .core {
+    position: absolute;
+    inset: 12px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%, #ffffff, #4facfe 35%, #7c3aed 70%, #1e1b4b 100%);
+    box-shadow: 0 0 25px 6px rgba(124, 58, 237, 0.6);
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
+    animation: pulse 3s ease-in-out infinite;
+  }
+
+  .orb-wrapper.listening .core {
+    animation: pulse 1s ease-in-out infinite;
+    box-shadow: 0 0 40px 12px rgba(79, 172, 254, 0.9);
+  }
+
+  .orb-wrapper.speaking .core {
+    background: radial-gradient(circle at 35% 30%, #fff, #fb923c 35%, #ea580c 70%, #451a03 100%);
+    box-shadow: 0 0 40px 12px rgba(251, 146, 60, 0.9);
+    animation: pulse 0.6s ease-in-out infinite;
+  }
+
+  .orb-wrapper.listening .ring {
+    animation: spin 2s linear infinite;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+  }
+
+  #statusText {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #ddd;
+    text-shadow: 0 0 4px black;
+    -webkit-app-region: drag;
+  }
+</style>
+</head>
+<body>
+  <div class="orb-wrapper" id="orb">
+    <div class="ring"></div>
+    <div class="core"></div>
+  </div>
+  <div id="statusText">Click orb to start</div>
+
+<script>
+  let wakePhrase = 'hey ai';
+  let listening = false;
+  let audioContext, processor, source, micStream;
+
+  const orb = document.getElementById('orb');
+  const statusText = document.getElementById('statusText');
+
+  function setState(state) {
+    orb.classList.remove('listening', 'speaking');
+    if (state) orb.classList.add(state);
+  }
+
+  function speak(text) {
+    setState('speaking');
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.onend = () => setState(listening ? 'listening' : null);
+    window.speechSynthesis.speak(utter);
+  }
+
+  async function loadConfig() {
+    const res = await fetch('/config');
+    const data = await res.json();
+    wakePhrase = data.wakePhrase.toLowerCase();
+  }
+
+  async function handleCommand(command) {
+  if (command === '') {
+    speak('Yes? What would you like to know?');
+    return;
+  }
+
+  try {
+    const res = await fetch('/assistant', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: command }),
+    });
+    const data = await res.json();
+
+    if (data.reply) {
+      speak(data.reply);
+    } else {
+      speak('Sorry, I could not process that.');
+    }
+  } catch (err) {
+    console.error('Assistant call failed:', err);
+    speak('Something went wrong reaching the assistant.');
+  }
+}
+
+  async function handleStatus(type) {
+    const res = await fetch('/tasks/status');
+    const data = await res.json();
+    let msg = '';
+
+    if (type === 'missed') {
+      msg = data.missed.length === 0
+        ? 'Nothing missed. You are fully caught up.'
+        : `You have ${data.missed.length} missed task${data.missed.length > 1 ? 's' : ''}: ${data.missed.map(t => t.title).join(', ')}.`;
+    }
+    if (type === 'today') {
+      msg = data.dueToday.length === 0
+        ? 'Nothing due today.'
+        : `Due today: ${data.dueToday.map(t => t.title).join(', ')}.`;
+    }
+    if (type === 'upcoming') {
+      msg = data.upcoming.length === 0
+        ? 'No upcoming tasks scheduled.'
+        : `Coming up: ${data.upcoming.map(t => t.title).join(', ')}.`;
+    }
+
+    speak(msg);
+  }
+
+  async function handleList() {
+    const res = await fetch('/tasks');
+    const tasks = await res.json();
+
+    if (tasks.length === 0) {
+      speak('No tasks saved yet.');
+      return;
+    }
+    const spoken = tasks.map(t => `${t.title}, due ${t.dueDate}, ${t.status}`).join('. ');
+    speak('Here is everything. ' + spoken);
+  }
+
+  // --- Audio capture + downsampling to 16kHz mono PCM16 for Vosk ---
+
+  function downsampleBuffer(buffer, sampleRate, outSampleRate) {
+    if (outSampleRate === sampleRate) return buffer;
+    const ratio = sampleRate / outSampleRate;
+    const newLength = Math.round(buffer.length / ratio);
+    const result = new Float32Array(newLength);
+    let offsetResult = 0, offsetBuffer = 0;
+    while (offsetResult < result.length) {
+      const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+      let accum = 0, count = 0;
+      for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
+        accum += buffer[i];
+        count++;
+      }
+      result[offsetResult] = accum / count;
+      offsetResult++;
+      offsetBuffer = nextOffsetBuffer;
+    }
+    return result;
+  }
+
+  function floatTo16BitPCM(float32Array) {
+    const buffer = new ArrayBuffer(float32Array.length * 2);
+    const view = new DataView(buffer);
+    let offset = 0;
+    for (let i = 0; i < float32Array.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+ async function startListening() {
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: true,
+    },
+  });
+
+  audioContext = new AudioContext({ sampleRate: 16000 });
+  source = audioContext.createMediaStreamSource(micStream);
+  processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+  source.connect(processor);
+  processor.connect(audioContext.destination);
+
+  processor.onaudioprocess = (e) => {
+    const inputData = e.inputBuffer.getChannelData(0);
+    const pcm = floatTo16BitPCM(inputData); // already 16kHz, no manual downsampling needed
+    window.voskBridge.sendAudio(pcm);
+  };
+}
+
+  function stopListening() {
+    if (processor) processor.disconnect();
+    if (source) source.disconnect();
+    if (micStream) micStream.getTracks().forEach((t) => t.stop());
+  }
+
+  // Vosk sends back finished phrases here
+ window.voskBridge.onResult((text) => {
+  const transcript = text.toLowerCase();
+  console.log('Heard:', transcript);
+
+  if (transcript.includes(wakePhrase)) {
+    const command = transcript.replace(wakePhrase, '').trim();
+    handleCommand(command);
+  }
+});
+
+  orb.addEventListener('click', async () => {
+    listening = !listening;
+    if (listening) {
+      await startListening();
+      setState('listening');
+      statusText.textContent = `Listening (say "${wakePhrase}")`;
+    } else {
+      stopListening();
+      setState(null);
+      statusText.textContent = 'Click orb to start';
+    }
+  });
+
+  loadConfig();
+</script>
+
+  
+</body>
+</html>

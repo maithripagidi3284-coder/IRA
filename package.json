@@ -1,0 +1,40 @@
+{
+  "name": "task-agent-backend",
+  "version": "1.0.0",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "cli": "node cli.js",
+    "setup": "node setup.js",
+    "build": "electron-builder",
+    "electron": "electron ."
+  },
+  "build": {
+  "appId": "com.yourname.taskagent",
+  "asarUnpack": [
+    "python/**",
+    "model/**"
+  ],
+  "win": {
+    "target": "nsis",
+    "icon": "build/icon.ico"
+  }
+},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^5.2.1",
+    "vosk-koffi": "^1.1.1",
+    "wav": "^1.0.2"
+  },
+  "description": "An offline AI voice agent that tracks your tasks and responds to voice commands from a floating desktop orb.",
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3",
+    "nodemon": "^3.1.14"
+  }
+
+}
