@@ -10,11 +10,14 @@
     "build": "electron-builder",
     "electron": "electron ."
   },
-  "build": {
+"build": {
   "appId": "com.yourname.taskagent",
   "asarUnpack": [
-    "python/**",
-    "model/**"
+    "python/**"
+  ],
+  "files": [
+    "**/*",
+    "!model/**"
   ],
   "win": {
     "target": "nsis",
